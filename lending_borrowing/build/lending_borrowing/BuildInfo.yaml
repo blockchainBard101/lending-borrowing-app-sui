@@ -3,16 +3,19 @@ compiled_package_info:
   package_name: lending_borrowing
   address_alias_instantiation:
     lending_borrowing: "0000000000000000000000000000000000000000000000000000000000000000"
+    pyth: abf837e98c26087cba0883c0a7a28326b1fa3c5e1e2c5abdb486f9e8f594c837
     std: "0000000000000000000000000000000000000000000000000000000000000001"
     sui: "0000000000000000000000000000000000000000000000000000000000000002"
-  source_digest: 7738CC55B3F893A1B889B4F79152F9D0D82E43B31BB395B4093676EAFD271BB4
+    wormhole: f47329f4344f3bf0f8e436e2f7b485466cff300f12a166563995d3888c296a94
+  source_digest: 567B2AA44001721B19FED126D2BB70C0ED5C5D683C2FD20AF650F2BF591EFFDE
   build_flags:
-    dev_mode: true
-    test_mode: true
+    dev_mode: false
+    test_mode: false
     generate_docs: false
+    save_disassembly: false
     install_dir: ~
     force_recompilation: false
-    lock_file: ~
+    lock_file: "./Move.lock"
     fetch_deps_only: false
     skip_fetch_latest_git_deps: false
     default_flavor: sui
@@ -27,4 +30,6 @@ compiled_package_info:
       lint: false
 dependencies:
   - MoveStdlib
+  - Pyth
   - Sui
+  - Wormhole
