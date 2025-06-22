@@ -20,7 +20,7 @@ module lending_borrowing::main {
         // Other arguments
         clock: &Clock,
         price_info_object: &PriceInfoObject,
-    ){
+    ):  (I64, I64) {
         let max_age = 60;
         // Make sure the price is not older than max_age seconds
         let price_struct = pyth::get_price_no_older_than(price_info_object,clock, max_age);
@@ -42,10 +42,10 @@ module lending_borrowing::main {
         debug::print(&price_i64);
         debug::print(&timestamp_sec);
 
-        // (decimal_i64.get_magnitude_if_positive(), price_i64.get_magnitude_if_positive())
         event::emit(PriceEvent{
             decimal: decimal_i64,
             price: price_i64
         });
+        (decimal_i64, price_i64)
     }
 }

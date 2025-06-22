@@ -7,7 +7,7 @@ compiled_package_info:
     std: "0000000000000000000000000000000000000000000000000000000000000001"
     sui: "0000000000000000000000000000000000000000000000000000000000000002"
     wormhole: f47329f4344f3bf0f8e436e2f7b485466cff300f12a166563995d3888c296a94
-  source_digest: 567B2AA44001721B19FED126D2BB70C0ED5C5D683C2FD20AF650F2BF591EFFDE
+  source_digest: 22F792633186EFA1F40CF0C9216CC290F1C39911D092664D5598C5B49E2C994A
   build_flags:
     dev_mode: false
     test_mode: false
@@ -28,6 +28,48 @@ compiled_package_info:
     lint_flag:
       no_lint: false
       lint: false
+    implicit_dependencies:
+      Bridge:
+        Internal:
+          kind:
+            Git:
+              git_url: "https://github.com/MystenLabs/sui.git"
+              git_rev: af5297b292c3
+              subdir: crates/sui-framework/packages/bridge
+          subst: ~
+          digest: ~
+          dep_override: true
+      MoveStdlib:
+        Internal:
+          kind:
+            Git:
+              git_url: "https://github.com/MystenLabs/sui.git"
+              git_rev: af5297b292c3
+              subdir: crates/sui-framework/packages/move-stdlib
+          subst: ~
+          digest: ~
+          dep_override: true
+      Sui:
+        Internal:
+          kind:
+            Git:
+              git_url: "https://github.com/MystenLabs/sui.git"
+              git_rev: af5297b292c3
+              subdir: crates/sui-framework/packages/sui-framework
+          subst: ~
+          digest: ~
+          dep_override: true
+      SuiSystem:
+        Internal:
+          kind:
+            Git:
+              git_url: "https://github.com/MystenLabs/sui.git"
+              git_rev: af5297b292c3
+              subdir: crates/sui-framework/packages/sui-system
+          subst: ~
+          digest: ~
+          dep_override: true
+    force_lock_file: false
 dependencies:
   - MoveStdlib
   - Pyth
