@@ -20,6 +20,8 @@ const EAmountMoreThanBorrowed : u64= 5;
 const NotEnoughCollateral : u64= 1;
 const NotEnoughLiquidityOnPool : u64= 2;
 const EAmountNotEqualBorrowed : u64= 3;
+const ENotBorrower : u64= 4;
+
 
 const PERCENT_SCALE: u64 =  100_000;
 const PLATFORM_SCALE: u64 = 1_000_000;
@@ -44,7 +46,8 @@ public struct LiquidityProviders has store{
 public struct BorrowNft<phantom A, phantom B> has key{
     id: UID,
     pool_id: ID,
-    borrower: Borrower
+    borrower: address,
+    url: String
 }
 
 public struct LendingNft<phantom A, phantom B> has key{
@@ -120,6 +123,7 @@ public fun add_liquidity<A, B>(pool: &mut Pool<A, B>, lending_nft: &mut Option<L
     balance::join(&mut pool.coin_a, coin_balance);
 }
 
+// TODO: BORROW_FEE
 #[allow(lint(self_transfer))]
 public fun borrow<A, B>(pool: &mut Pool<A, B>, borrow_nft: &mut Option<BorrowNft<A, B>>, borrow_amount: u64, collateral_coin: Coin<B>,clock: &Clock,price_info_object: &PriceInfoObject, ctx: &mut TxContext) {
     let collateral_coin_amount = collateral_coin.value();
@@ -174,12 +178,10 @@ public fun borrow<A, B>(pool: &mut Pool<A, B>, borrow_nft: &mut Option<BorrowNft
     };
     let lps: &mut LiquidityProviders = df::borrow_mut(&mut pool.id, b"providers");
     if(lps.borrowers.contains(ctx.sender()) && borrow_nft.is_some()) {
-        let mut borrower = lps.borrowers.borrow_mut(ctx.sender());
+        let borrower = lps.borrowers.borrow_mut(ctx.sender());
         borrower.total_amount_borrowed = borrower.total_amount_borrowed  + borrow_amount;
         vector::push_back(&mut borrower.borrows, borrow);
         borrower.total_collateral_coin_amount = borrower.total_collateral_coin_amount + collateral_coin_amount;
-        let b_nft = option::borrow_mut(borrow_nft);
-        b_nft.borrower = *borrower;
     } else{
         let mut borrower = Borrower{
             total_amount_borrowed: borrow_amount,
@@ -193,7 +195,8 @@ public fun borrow<A, B>(pool: &mut Pool<A, B>, borrow_nft: &mut Option<BorrowNft
         let b_nft = BorrowNft<A,B>{
             id: object::new(ctx),
             pool_id: *pool.id.uid_as_inner(),
-            borrower: borrower,
+            borrower: ctx.sender(),
+            url: string::utf8(b""),
         };
         transfer::transfer(b_nft, ctx.sender());
     };
@@ -213,15 +216,16 @@ public fun repay<A, B>(
     ctx: &mut TxContext) 
     {
     assert!(borrowed_coin.value() == 0, EZeroCoin);
+    let lps: &mut LiquidityProviders = df::borrow_mut(&mut pool.id, b"providers");
     let amount = borrowed_coin.value();
-    let mut borrower = borrow_nft.borrower;
+    let borrower = lps.borrowers.borrow_mut(ctx.sender());
+    assert!(borrow_nft.borrower == ctx.sender(), ENotBorrower);
     assert!((amount <= borrower.total_amount_borrowed && loan_to_repay_idx.is_none()) || (loan_to_repay_idx.is_some() && (amount <= vector::borrow_mut(&mut borrower.borrows, *loan_to_repay_idx.borrow()).amount_borrowed)), EAmountMoreThanBorrowed);
     assert!((amount == borrower.total_amount_borrowed && loan_to_repay_idx.is_none()) || (loan_to_repay_idx.is_some() && (amount <= vector::borrow_mut(&mut borrower.borrows, *loan_to_repay_idx.borrow()).amount_borrowed)), EAmountNotEqualBorrowed);
     let (decimals_i64, price_i64) = main::use_pyth_price(clock, price_info_object);
     let price_decimals = decimals_i64.get_magnitude_if_negative();
     let collateral_coin_price = price_i64.get_magnitude_if_positive();
 
-    let lps: &mut LiquidityProviders = df::borrow_mut(&mut pool.id, b"providers");
 
     let coin_balance  = coin::into_balance(borrowed_coin); 
     
@@ -259,10 +263,57 @@ public fun repay<A, B>(
             borrower.total_collateral_coin_amount = borrower.total_collateral_coin_amount - collateral_to_return;
         };
     };
-
-    let lps_borrower = lps.borrowers.borrow_mut(ctx.sender());
-    *lps_borrower = borrower;
 }
+
+public fun liquidate<A, B>(
+    pool: &mut Pool<A, B>, 
+    borrower_address: address,
+    borrow_idx: u64,
+    repay_coin: Coin<A>,
+    price_info_object: &PriceInfoObject,
+    clock: &Clock,
+    ctx: &mut TxContext
+) {
+    let (decimals_i64, price_i64) = main::use_pyth_price(clock, price_info_object);
+    let price_decimals = decimals_i64.get_magnitude_if_negative();
+    let oracle_price = price_i64.get_magnitude_if_positive();
+
+    let lps: &mut LiquidityProviders = df::borrow_mut(&mut pool.id, b"providers");
+    let borrower_ref = lps.borrowers.borrow_mut(borrower_address);
+    let borrow = vector::borrow_mut(&mut borrower_ref.borrows, borrow_idx);
+
+    assert!(!borrow.loan_paid, EAmountNotEqualBorrowed);
+    let coin_b_decimals = 9;
+    let collateral_value = (borrow.collateral_coin_amount as u128) * (oracle_price as u128)
+        / (utils::pow(10, coin_b_decimals + price_decimals) as u128);
+    
+    let current_ltv = (borrow.amount_borrowed as u128) * (PLATFORM_SCALE as u128) / collateral_value;
+
+    // current LTV > threshold → liquidate
+    assert!(current_ltv > (pool.liquidation_threshold as u128) * (PERCENT_SCALE as u128) / 100, NotEnoughCollateral);
+
+    // Give 5% discount to liquidator
+    let collateral_to_claim = borrow.collateral_coin_amount * 95 / 100;
+
+    assert!(repay_coin.value() >= borrow.amount_borrowed, EAmountNotEqualBorrowed);
+    let repay_amount = repay_coin.value();
+    let repay_balance = coin::into_balance(repay_coin);
+    pool.coin_a.join(repay_balance);
+
+    let collateral = coin::take(&mut pool.coin_b, collateral_to_claim, ctx);
+    transfer::public_transfer(collateral, ctx.sender());
+
+    borrow.amount_borrowed = 0;
+    borrow.loan_paid = true;
+    borrower_ref.total_amount_borrowed = borrower_ref.total_amount_borrowed - repay_amount;
+    borrower_ref.total_collateral_coin_amount = borrower_ref.total_collateral_coin_amount - collateral_to_claim;
+
+    //TODO: Get The collateral coin back
+}
+
+
+//TODO: Rewards function
+
 
 // fun get_borrow_risk(borrow: &Borrows, raw_oracle_price: u64, oracle_decimals: u64, liquidation_threshold: u8 ): u64 {
 //     let normalized_price = utils::normalize_price(raw_oracle_price, oracle_decimals);
