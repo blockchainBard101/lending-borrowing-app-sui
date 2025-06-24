@@ -1,5 +1,5 @@
 module lending_borrowing::lending_borrowing;
-use std::ascii::String as AsciiString;
+// use std::ascii::String as AsciiString;
 use sui::coin::{Self, Coin};
 use sui::balance::{Self, Balance};
 use sui::table::{Table, new};
@@ -13,14 +13,16 @@ use lending_borrowing::main;
 use lending_borrowing::utils;
 
 use pyth::price_info::PriceInfoObject;
-use pyth::price;
+// use pyth::price;
 
 const EZeroCoin : u64= 1;
 const EAmountMoreThanBorrowed : u64= 5;
 const NotEnoughCollateral : u64= 1;
 const NotEnoughLiquidityOnPool : u64= 2;
+const EAmountNotEqualBorrowed : u64= 3;
 
-const LTV_DECIMALS: u64 = 2;
+const PERCENT_SCALE: u64 =  100_000;
+const PLATFORM_SCALE: u64 = 1_000_000;
 
 public struct Pool<phantom A, phantom B> has key{
     id : UID,
@@ -56,6 +58,7 @@ public struct LendingNft<phantom A, phantom B> has key{
 public struct Borrower has store, copy, drop{
     total_amount_borrowed: u64,
     total_amount_payed: u64,
+    total_collateral_coin_amount: u64,
     borrows: vector<Borrows>,
     collateral_price_deciaml: u64,
 }
@@ -67,6 +70,7 @@ public struct Borrows has store, copy, drop{
     collateral_coin_price_at_borrow: u64,
     price_decimals: u64,
     liquidation_price: u128,
+    loan_paid: bool,
     date: u64,
 }
 
@@ -126,26 +130,26 @@ public fun borrow<A, B>(pool: &mut Pool<A, B>, borrow_nft: &mut Option<BorrowNft
 
     let (decimals_i64, price_i64) = main::use_pyth_price(clock, price_info_object);
     let price_decimals = decimals_i64.get_magnitude_if_negative();
-    
+    let collateral_coin_price = price_i64.get_magnitude_if_positive();
+
     let mut liquidation_price;
-    let mut division_dec = 0;
+    // let mut division_dec = 0;
 
     if(coin_b_decimals > usdc_decimals){
-        division_dec = coin_b_decimals - usdc_decimals;
-        liquidation_price = ((borrow_amount as u128) * (utils::pow(10, division_dec) as u128)  * (utils::pow(10, price_decimals) as u128)) / (((collateral_coin_amount as u128) * (pool.liquidation_threshold as u128)) / (100 * utils::pow(10, LTV_DECIMALS) as u128 ));
+        let division_dec = coin_b_decimals - usdc_decimals;
+        liquidation_price = ((borrow_amount as u128) * (utils::pow(10, division_dec) as u128)  * (utils::pow(10, price_decimals) as u128)) / (((collateral_coin_amount as u128) * (pool.liquidation_threshold as u128)) / (100 * PERCENT_SCALE as u128 ));
 
     } else{
         if(coin_b_decimals == usdc_decimals){
-            liquidation_price = ((borrow_amount as u128)  * (utils::pow(10, price_decimals) as u128)) / (((collateral_coin_amount as u128) * (pool.liquidation_threshold as u128)) / (100 * utils::pow(10, LTV_DECIMALS) as u128 ));
+            liquidation_price = ((borrow_amount as u128)  * (utils::pow(10, price_decimals) as u128)) / (((collateral_coin_amount as u128) * (pool.liquidation_threshold as u128)) / (100 * PERCENT_SCALE as u128 ));
         } else{
-            division_dec = usdc_decimals - coin_b_decimals;
-            liquidation_price = ((borrow_amount as u128)  * (utils::pow(10, price_decimals) as u128)) / (((collateral_coin_amount as u128)* (utils::pow(10, division_dec) as u128) * (pool.liquidation_threshold as u128)) / (100 * utils::pow(10, LTV_DECIMALS) as u128 ));
+            let division_dec = usdc_decimals - coin_b_decimals;
+            liquidation_price = ((borrow_amount as u128)  * (utils::pow(10, price_decimals) as u128)) / (((collateral_coin_amount as u128)* (utils::pow(10, division_dec) as u128) * (pool.liquidation_threshold as u128)) / (100 * PERCENT_SCALE as u128 ));
         }
     };
 
-    let collateral_coin_price = price_i64.get_magnitude_if_positive();
     let b_value_price_a = ((collateral_coin_amount as u128) * (collateral_coin_price as u128)) / (utils::pow(10, coin_b_decimals + price_decimals ) as u128);
-    let max_borrow_value = b_value_price_a * (ltv as u128) / (100 * utils::pow(10, LTV_DECIMALS) as u128);
+    let max_borrow_value = b_value_price_a * (ltv as u128) / (100 * PERCENT_SCALE as u128);
 
     // let decimals = price_decimals + 9 + 2;  //pyth price decimals + sui decimals + ltv decimals
     // let uf = utils::pow(10, decimals - usdc_decimals) as u128;
@@ -165,6 +169,7 @@ public fun borrow<A, B>(pool: &mut Pool<A, B>, borrow_nft: &mut Option<BorrowNft
         collateral_coin_price_at_borrow: collateral_coin_price,
         price_decimals,
         liquidation_price,
+        loan_paid: false,
         date: clock.timestamp_ms()
     };
     let lps: &mut LiquidityProviders = df::borrow_mut(&mut pool.id, b"providers");
@@ -172,6 +177,7 @@ public fun borrow<A, B>(pool: &mut Pool<A, B>, borrow_nft: &mut Option<BorrowNft
         let mut borrower = lps.borrowers.borrow_mut(ctx.sender());
         borrower.total_amount_borrowed = borrower.total_amount_borrowed  + borrow_amount;
         vector::push_back(&mut borrower.borrows, borrow);
+        borrower.total_collateral_coin_amount = borrower.total_collateral_coin_amount + collateral_coin_amount;
         let b_nft = option::borrow_mut(borrow_nft);
         b_nft.borrower = *borrower;
     } else{
@@ -179,6 +185,7 @@ public fun borrow<A, B>(pool: &mut Pool<A, B>, borrow_nft: &mut Option<BorrowNft
             total_amount_borrowed: borrow_amount,
             total_amount_payed: 0,
             borrows: vector::empty<Borrows>(),
+            total_collateral_coin_amount: collateral_coin_amount,
             collateral_price_deciaml: price_decimals,
         };
         vector::push_back(&mut borrower.borrows, borrow);
@@ -195,34 +202,106 @@ public fun borrow<A, B>(pool: &mut Pool<A, B>, borrow_nft: &mut Option<BorrowNft
     transfer::public_transfer(lend_coin, ctx.sender());
 }
 
+#[allow(lint(self_transfer))]
 public fun repay<A, B>(
     pool: &mut Pool<A, B>, 
     borrow_nft: &mut BorrowNft<A, B>, 
     borrowed_coin: Coin<A>, 
+    loan_to_repay_idx: Option<u64>,
     price_info_object: &PriceInfoObject,
     clock: &Clock, 
     ctx: &mut TxContext) 
     {
     assert!(borrowed_coin.value() == 0, EZeroCoin);
     let amount = borrowed_coin.value();
-    assert!(amount as u128 > borrow_nft.borrower.total_amount_borrowed, EAmountMoreThanBorrowed);
+    let mut borrower = borrow_nft.borrower;
+    assert!((amount <= borrower.total_amount_borrowed && loan_to_repay_idx.is_none()) || (loan_to_repay_idx.is_some() && (amount <= vector::borrow_mut(&mut borrower.borrows, *loan_to_repay_idx.borrow()).amount_borrowed)), EAmountMoreThanBorrowed);
+    assert!((amount == borrower.total_amount_borrowed && loan_to_repay_idx.is_none()) || (loan_to_repay_idx.is_some() && (amount <= vector::borrow_mut(&mut borrower.borrows, *loan_to_repay_idx.borrow()).amount_borrowed)), EAmountNotEqualBorrowed);
+    let (decimals_i64, price_i64) = main::use_pyth_price(clock, price_info_object);
+    let price_decimals = decimals_i64.get_magnitude_if_negative();
+    let collateral_coin_price = price_i64.get_magnitude_if_positive();
+
     let lps: &mut LiquidityProviders = df::borrow_mut(&mut pool.id, b"providers");
 
-    let coin_balance  = coin::into_balance(    borrowed_coin); 
+    let coin_balance  = coin::into_balance(borrowed_coin); 
     
+    if (loan_to_repay_idx.is_none()) {
+        pool.coin_a.join(coin_balance);
+        borrower.total_amount_payed = borrower.total_amount_borrowed;
+        borrower.borrows = pay_all_borrowed(borrower.borrows);
+        let collateral_coin = coin::take(&mut pool.coin_b, borrower.total_collateral_coin_amount, ctx);
+        borrower.total_collateral_coin_amount = 0;
+        transfer::public_transfer(collateral_coin, ctx.sender());
+    } else{
+        let loan_to_repay_idx_val = *loan_to_repay_idx.borrow();
+        let loan_to_repay_ref = vector::borrow_mut(&mut borrower.borrows, loan_to_repay_idx_val);
+        if (amount == loan_to_repay_ref.amount_borrowed) {
+            pool.coin_a.join(coin_balance);
+            let collateral_amount = loan_to_repay_ref.collateral_coin_amount;
+            loan_to_repay_ref.amount_borrowed = 0;
+            loan_to_repay_ref.collateral_coin_amount = 0;
+            loan_to_repay_ref.loan_paid = true;
+            let collateral_coin = coin::take(&mut pool.coin_b, collateral_amount, ctx);
+            transfer::public_transfer(collateral_coin, ctx.sender());
 
+            borrower.total_amount_payed = borrower.total_amount_payed + amount;
+            borrower.total_collateral_coin_amount = borrower.total_collateral_coin_amount - collateral_amount;
+        } else{
+            pool.coin_a.join(coin_balance);
+            let repayment_percent = get_repayment_percentage(amount, loan_to_repay_ref.amount_borrowed);
+            let collateral_to_return = get_collateral_to_return(repayment_percent, loan_to_repay_ref.collateral_coin_amount);
+            loan_to_repay_ref.amount_borrowed = loan_to_repay_ref.amount_borrowed - amount;
+            loan_to_repay_ref.collateral_coin_amount = loan_to_repay_ref.collateral_coin_amount - collateral_to_return;
+            let collateral_coin = coin::take(&mut pool.coin_b, collateral_to_return, ctx);
+            transfer::public_transfer(collateral_coin, ctx.sender());
+
+            borrower.total_amount_payed = borrower.total_amount_payed + amount;
+            borrower.total_collateral_coin_amount = borrower.total_collateral_coin_amount - collateral_to_return;
+        };
+    };
+
+    let lps_borrower = lps.borrowers.borrow_mut(ctx.sender());
+    *lps_borrower = borrower;
 }
 
-fun get_borrow_risk(borrow: &Borrows, price: u64){
-    let collateral_value = borrow.collateral_coin_amount * price;
-    let current_ltv = borrow.amount_borrowed / price;
+// fun get_borrow_risk(borrow: &Borrows, raw_oracle_price: u64, oracle_decimals: u64, liquidation_threshold: u8 ): u64 {
+//     let normalized_price = utils::normalize_price(raw_oracle_price, oracle_decimals);
+//     let collateral_value = borrow.collateral_coin_amount * normalized_price;
+//     let current_ltv = (borrow.amount_borrowed * PLATFORM_SCALE) / collateral_value;
+//     let ltv_progress = (current_ltv * PERCENT_SCALE) / (liquidation_threshold as u64);
+//     ltv_progress
+// }
+
+
+// fun get_borrows_with_highest_liquidation_risk_idx(borrows:vector<Borrows>, raw_oracle_price: u64, oracle_decimals: u64, liquidation_threshold: u8, clock: &Clock) : u64 {
+//     let mut i = 0;
+//     let mut max_ltv_progress = 0;
+//     let mut max_ltv_index = 0;
+//     while(i <= vector::length(borrows)) {
+//         let ltv_progress = get_borrow_risk(vector::borrow(borrows, i), raw_oracle_price, oracle_decimals, liquidation_threshold);
+//         if (ltv_progress > max_ltv_progress) {
+//             max_ltv_progress = ltv_progress;
+//             max_ltv_index = i;
+//         }
+//     };
+//     return max_ltv_index
+// }
+
+fun pay_all_borrowed(mut borrows: vector<Borrows>) : vector<Borrows> {
+    let mut i = 0;
+    while(i <= vector::length(&borrows)) {
+        let borrow = vector::borrow_mut(&mut borrows, i);
+        borrow.amount_payed = borrow.amount_borrowed;
+        i = i + 1;
+    };
+    return borrows
 }
 
+fun get_repayment_percentage(repay_amount: u64, total_borrowed: u64): u64 {
+    assert!(total_borrowed > 0, 0);
+    repay_amount * PLATFORM_SCALE / total_borrowed
+}
 
-fun check_borrows_with_highest_liquidation_risk(borrows: vector<Borrows>, clock: &Clock){
-    if(vector::length(&borrows) > 0) {
-
-    }else{
-
-    }
+fun get_collateral_to_return(repayment_percent: u64, total_collateral: u64): u64 {
+    total_collateral * repayment_percent / PLATFORM_SCALE
 }
